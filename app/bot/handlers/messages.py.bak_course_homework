@@ -1,0 +1,313 @@
+from datetime import datetime
+
+from aiogram import F, Router
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+
+from app.bot.utils.response_effect import ResponseEffect
+from app.bot.handlers.course import get_course_keyboard_for_step
+from app.bot.handlers.subscription import build_subscription_main_text_for_user
+from app.bot.keyboards.checkout import checkout_keyboard
+from app.bot.keyboards.referral import photo_limit_subscription_keyboard
+from app.bot.keyboards.referral import referral_daily_limit_keyboard
+from app.bot.keyboards.subscription import subscription_main_keyboard
+from app.repositories.user_repo import UserRepository
+from app.services.access_service import AccessService
+from app.services.course_engine_service import CourseEngineService
+from app.services.course_tutor_service import CourseTutorService
+from app.services.image_input_service import ImageInputService
+from app.services.image_qa_service import ImageQAService
+from app.services.qa_service import QAService
+from app.bot.utils.i18n import t
+
+
+router = Router()
+
+
+def _next_study_time_keyboard(user_lang: str) -> ReplyKeyboardMarkup:
+    skip_map = {
+        "uz": "O‘tkazib yuborish",
+        "ru": "Пропустить",
+        "tj": "Гузаронидан",
+    }
+
+    skip_text = skip_map.get(user_lang, "Пропустить")
+
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="09:00"), KeyboardButton(text="14:00")],
+            [KeyboardButton(text="19:00"), KeyboardButton(text="21:00")],
+            [KeyboardButton(text=skip_text)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+
+def _parse_next_study_at(raw_text: str):
+    raw_text = (raw_text or "").strip()
+    if not raw_text:
+        return None
+
+    formats = [
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%H:%M",
+    ]
+
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(raw_text, fmt)
+            if fmt == "%H:%M":
+                now = datetime.now()
+                parsed = parsed.replace(year=now.year, month=now.month, day=now.day)
+            return parsed
+        except ValueError:
+            continue
+
+    return None
+
+
+@router.message(F.text & ~F.text.startswith("/"))
+async def handle_text_message(message: Message, session):
+    user_repo = UserRepository(session)
+    access_service = AccessService(session)
+
+    user = await user_repo.get_by_telegram_id(message.from_user.id)
+    user_lang = user.language if user and user.language else "ru"
+
+    if message.text and message.text.startswith("/"):
+        return
+
+    if user and user.selected_plan_type:
+        await message.answer(
+            t("payment_send_screenshot_only", user_lang),
+            reply_markup=checkout_keyboard(user_lang),
+        )
+        return
+
+    if user and user.discount_progress_message_id:
+        await message.answer(t("subscription_discount_text_blocked", user_lang))
+        return
+
+    if user and user.learning_mode == "course":
+        engine = CourseEngineService(session)
+        tutor = CourseTutorService()
+
+        current_user, progress, lesson, error_key = await engine.get_current_lesson(message.from_user.id)
+        if error_key:
+            await message.answer(t(error_key, user_lang))
+            return
+
+        if progress.waiting_for == "satisfaction_reason":
+            tutor_text = await tutor.generate_step_response(
+                user_language=current_user.language,
+                user_level=current_user.level,
+                lesson=lesson,
+                step=progress.current_step,
+                user_message=f"User did not understand this part: {message.text or ''}",
+            )
+            await engine.mark_not_satisfied_and_stay(message.from_user.id)
+            refreshed_user, refreshed_progress, refreshed_lesson, refreshed_error = await engine.get_current_lesson(
+                message.from_user.id
+            )
+            if refreshed_error:
+                await message.answer(t(refreshed_error, user_lang))
+                return
+
+            await message.answer(
+                tutor_text,
+                reply_markup=get_course_keyboard_for_step(user_lang, refreshed_progress.current_step),
+            )
+            return
+
+        if progress.waiting_for == "homework_submission":
+            await engine.mark_homework_submitted(message.from_user.id)
+            await message.answer(
+                f"{t('course_homework_received', user_lang)}\n\n{t('course_next_study_time_optional', user_lang)}",
+                reply_markup=_next_study_time_keyboard(user_lang),
+            )
+            return
+
+        if progress.waiting_for == "next_study_time":
+            skip_map = {
+                "uz": "O‘tkazib yuborish",
+                "ru": "Пропустить",
+                "tj": "Гузаронидан",
+            }
+
+            if (message.text or "").strip() == skip_map.get(user_lang, "Пропустить"):
+                await engine.set_next_study_at(message.from_user.id, None)
+                await message.answer(t("course_next_study_time_skipped", user_lang))
+                return
+
+            next_study_at = _parse_next_study_at(message.text or "")
+            if not next_study_at:
+                await message.answer(
+                    t("course_invalid_time_format", user_lang),
+                    reply_markup=_next_study_time_keyboard(user_lang),
+                )
+                return
+
+            await engine.set_next_study_at(message.from_user.id, next_study_at)
+            await message.answer(t("course_next_study_time_saved", user_lang))
+            return
+
+        tutor_text = await tutor.generate_step_response(
+            user_language=current_user.language,
+            user_level=current_user.level,
+            lesson=lesson,
+            step=progress.current_step,
+            user_message=message.text or "",
+        )
+
+        await message.answer(
+            tutor_text,
+            reply_markup=get_course_keyboard_for_step(user_lang, progress.current_step),
+        )
+        return
+
+    can_use, message_key = await access_service.can_use_text_ai(message.from_user.id)
+
+    if not can_use:
+        if message_key == "access_daily_limit_reached":
+            if user and not await user_repo.was_daily_limit_offer_sent_today(user):
+                await user_repo.mark_daily_limit_offer_sent(user)
+                await session.commit()
+                await message.answer(
+                    t("referral_daily_limit_offer", user_lang),
+                    reply_markup=referral_daily_limit_keyboard(user_lang),
+                )
+                return
+
+            await message.answer(t("access_daily_limit_reached", user_lang))
+            return
+
+        if message_key == "access_trial_expired":
+            await message.answer(t("access_trial_expired", user_lang))
+            await message.answer(
+                build_subscription_main_text_for_user(user, user_lang),
+                reply_markup=subscription_main_keyboard(user_lang),
+                disable_web_page_preview=True,
+            )
+            return
+
+        if message_key == "access_subscription_expired":
+            await message.answer(t("access_subscription_expired", user_lang))
+            await message.answer(
+                build_subscription_main_text_for_user(user, user_lang),
+                reply_markup=subscription_main_keyboard(user_lang),
+                disable_web_page_preview=True,
+            )
+            return
+
+        await message.answer(t(message_key, user_lang))
+        return
+
+    effect = ResponseEffect(message)
+    await effect.start()
+
+    try:
+        qa_service = QAService(session)
+        reply = await qa_service.handle_user_message(
+            bot=message.bot,
+            telegram_id=message.from_user.id,
+            text=message.text,
+            telegram_message_id=message.message_id,
+        )
+    finally:
+        await effect.stop()
+
+    if reply.startswith("access_"):
+        await message.answer(t(reply, user_lang))
+        return
+
+    await message.answer(reply)
+
+
+@router.message(F.photo)
+async def handle_image_message(message: Message, session):
+    user_repo = UserRepository(session)
+    access_service = AccessService(session)
+    image_input_service = ImageInputService()
+
+    user = await user_repo.get_by_telegram_id(message.from_user.id)
+    user_lang = user.language if user and user.language else "ru"
+
+    can_use, message_key = await access_service.can_use_image_ai(message.from_user.id)
+    if not can_use:
+        if message_key == "access_daily_image_limit_reached":
+            await message.answer(
+                t("access_daily_image_limit_reached", user_lang),
+                reply_markup=photo_limit_subscription_keyboard(user_lang),
+            )
+            return
+
+        if message_key == "access_trial_expired":
+            await message.answer(t("access_trial_expired", user_lang))
+            await message.answer(
+                build_subscription_main_text_for_user(user, user_lang),
+                reply_markup=subscription_main_keyboard(user_lang),
+                disable_web_page_preview=True,
+            )
+            return
+
+        if message_key == "access_subscription_expired":
+            await message.answer(t("access_subscription_expired", user_lang))
+            await message.answer(
+                build_subscription_main_text_for_user(user, user_lang),
+                reply_markup=subscription_main_keyboard(user_lang),
+                disable_web_page_preview=True,
+            )
+            return
+
+        await message.answer(t(message_key, user_lang))
+        return
+
+    if not user:
+        await message.answer(t("access_start_first", user_lang))
+        return
+
+    file_id = image_input_service.get_image_file_id(message)
+    mime_type = image_input_service.get_image_mime_type(message)
+
+    if not file_id:
+        await message.answer(t("image_invalid_format", user_lang))
+        return
+
+    effect = ResponseEffect(message)
+    await effect.start()
+
+    try:
+        image_qa_service = ImageQAService(session)
+        reply = await image_qa_service.handle_user_image(
+            bot=message.bot,
+            telegram_id=message.from_user.id,
+            file_id=file_id,
+            mime_type=mime_type,
+            telegram_message_id=message.message_id,
+        )
+    finally:
+        await effect.stop()
+
+    if reply.startswith("access_"):
+        await message.answer(t(reply, user_lang))
+        return
+
+    await message.answer(reply)
+
+
+@router.message(F.document)
+async def handle_unsupported_document(message: Message, session):
+    user_repo = UserRepository(session)
+    user = await user_repo.get_by_telegram_id(message.from_user.id)
+    user_lang = user.language if user and user.language else "ru"
+
+    if user and user.selected_plan_type:
+        await message.answer(
+            t("payment_send_screenshot_only", user_lang),
+            reply_markup=checkout_keyboard(user_lang),
+        )
+        return
+
+    await message.answer(t("image_invalid_format", user_lang))

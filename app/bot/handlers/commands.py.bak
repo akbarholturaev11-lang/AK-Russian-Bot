@@ -1,0 +1,292 @@
+from aiogram import Router, F
+from aiogram.filters import Command
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
+
+from app.config import settings
+from app.repositories.user_repo import UserRepository
+from app.bot.handlers.subscription import build_subscription_main_text_for_user
+from app.bot.keyboards.subscription import subscription_main_keyboard
+from app.bot.keyboards.referral import photo_limit_subscription_keyboard
+from app.bot.utils.i18n import t
+
+
+router = Router()
+
+
+def _lang(user) -> str:
+    return user.language if user and user.language else "ru"
+
+
+def _fmt_date(dt) -> str:
+    if not dt:
+        return "-"
+    try:
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return str(dt)
+
+
+def _status_label(status: str, lang: str) -> str:
+    if lang == "tj":
+        return {
+            "trial": "Санҷишӣ",
+            "active": "Фаъол",
+            "expired": "Ба анҷом расида",
+            "blocked": "Баста",
+        }.get(status, status)
+    if lang == "uz":
+        return {
+            "trial": "Sinov",
+            "active": "Faol",
+            "expired": "Tugagan",
+            "blocked": "Bloklangan",
+        }.get(status, status)
+    return {
+        "trial": "Пробный",
+        "active": "Активный",
+        "expired": "Закончен",
+        "blocked": "Заблокирован",
+    }.get(status, status)
+
+
+
+def _profile_text(user, lang: str) -> str:
+    from html import escape
+
+    full_name = escape(str(getattr(user, "full_name", "—") or "—"))
+    language = escape(str(getattr(user, "language", "—") or "—"))
+    level = escape(str(getattr(user, "level", "—") or "—"))
+    status_raw = str(getattr(user, "status", "—") or "—")
+    learning_mode = escape(str(getattr(user, "learning_mode", "—") or "—"))
+
+    started = (
+        getattr(user, "start_date", None)
+        or getattr(user, "trial_start_date", None)
+        or getattr(user, "trial_started_at", None)
+        or getattr(user, "created_at", None)
+    )
+    ends = (
+        getattr(user, "end_date", None)
+        or getattr(user, "trial_end_date", None)
+        or getattr(user, "trial_ends_at", None)
+        or getattr(user, "subscription_end_date", None)
+        or getattr(user, "expires_at", None)
+    )
+
+    plan_raw = getattr(user, "selected_plan_type", None)
+
+    duration_days = None
+    try:
+        start_dt = getattr(user, "start_date", None)
+        end_dt = getattr(user, "end_date", None)
+        if start_dt and end_dt:
+            duration_days = (end_dt.date() - start_dt.date()).days
+    except Exception:
+        duration_days = None
+
+    if plan_raw:
+        plan_key = str(plan_raw)
+        if lang == "tj":
+            plan_map = {
+                "trial_3_days": "trial 3-рӯза",
+                "free_trial": "trial 3-рӯза",
+                "10_days": "10 рӯз",
+                "1_month": "1 моҳ",
+                "monthly": "1 моҳ",
+            }
+        elif lang == "uz":
+            plan_map = {
+                "trial_3_days": "3 kunlik trial",
+                "free_trial": "3 kunlik trial",
+                "10_days": "10 kun",
+                "1_month": "1 oy",
+                "monthly": "1 oy",
+            }
+        else:
+            plan_map = {
+                "trial_3_days": "3 дня trial",
+                "free_trial": "3 дня trial",
+                "10_days": "10 дней",
+                "1_month": "1 месяц",
+                "monthly": "1 месяц",
+            }
+        plan_label = plan_map.get(plan_key, plan_key)
+    else:
+        if status_raw == "trial":
+            plan_label = "trial 3-рӯза" if lang == "tj" else ("3 kunlik trial" if lang == "uz" else "3 дня trial")
+        elif status_raw == "active":
+            if duration_days is not None and 9 <= duration_days <= 11:
+                plan_label = "10 рӯз" if lang == "tj" else ("10 kun" if lang == "uz" else "10 дней")
+            elif duration_days is not None and 28 <= duration_days <= 31:
+                plan_label = "1 моҳ" if lang == "tj" else ("1 oy" if lang == "uz" else "1 месяц")
+            else:
+                plan_label = "Обунаи фаъол" if lang == "tj" else ("Faol obuna" if lang == "uz" else "Активная подписка")
+        else:
+            plan_label = "—"
+
+    status = escape(status_raw)
+    plan = escape(str(plan_label))
+
+    def fmt_date(value):
+        if not value:
+            return "—"
+        try:
+            return str(value)[:10]
+        except Exception:
+            return "—"
+
+    started_str = escape(fmt_date(started))
+    ends_str = escape(fmt_date(ends))
+
+    if lang == "tj":
+        text = (
+            f"<b>👤 Профили шумо</b>\n\n"
+            f"<blockquote>"
+            f"🙍 <b>Ном:</b> {full_name}\n"
+            f"🈯 <b>Забон:</b> {language}\n"
+            f"📖 <b>Дараҷа:</b> {level}\n"
+            f"🎯 <b>Режими ҷорӣ:</b> {learning_mode}\n"
+            f"⭐ <b>Ҳолат:</b> {status}\n"
+            f"💳 <b>Тариф:</b> {plan}\n\n"
+            f"🗓 <b>Оғоз:</b> {started_str}\n"
+            f"⌛ <b>Анҷом:</b> {ends_str}"
+            f"</blockquote>"
+        )
+        if getattr(user, "status", "") != "active":
+            text += "\n\n🔓 <b>Агар обунаро фаъол кунед</b>, метавонед аз бот бе ягон лимит истифода баред."
+        else:
+            text += "\n\n✅ <b>Шумо обунаи фаъол доред.</b> Шумо метавонед аз ҳамаи функсияҳои бот истифода баред."
+        return text
+
+    if lang == "uz":
+        text = (
+            f"<b>👤 Profilingiz</b>\n\n"
+            f"<blockquote>"
+            f"🙍 <b>Ism:</b> {full_name}\n"
+            f"🈯 <b>Til:</b> {language}\n"
+            f"📖 <b>Daraja:</b> {level}\n"
+            f"🎯 <b>Joriy rejim:</b> {learning_mode}\n"
+            f"⭐ <b>Holat:</b> {status}\n"
+            f"💳 <b>Tarif:</b> {plan}\n\n"
+            f"🗓 <b>Boshlanish:</b> {started_str}\n"
+            f"⌛ <b>Tugash:</b> {ends_str}"
+            f"</blockquote>"
+        )
+        if getattr(user, "status", "") != "active":
+            text += "\n\n🔓 <b>Obuna faollashtirsangiz</b>, botdan hech qanday limitsiz foydalanasiz."
+        else:
+            text += "\n\n✅ <b>Sizda faol obuna bor.</b> Botning barcha funksiyalaridan foydalanishingiz mumkin."
+        return text
+
+    text = (
+        f"<b>👤 Ваш профиль</b>\n\n"
+        f"<blockquote>"
+        f"🙍 <b>Имя:</b> {full_name}\n"
+        f"🈯 <b>Язык:</b> {language}\n"
+        f"📖 <b>Уровень:</b> {level}\n"
+        f"🎯 <b>Текущий режим:</b> {learning_mode}\n"
+        f"⭐ <b>Статус:</b> {status}\n"
+        f"💳 <b>Тариф:</b> {plan}\n\n"
+        f"🗓 <b>Начало:</b> {started_str}\n"
+        f"⌛ <b>Окончание:</b> {ends_str}"
+        f"</blockquote>"
+    )
+    if getattr(user, "status", "") != "active":
+        text += "\n\n🔓 <b>Если активируете подписку</b>, сможете пользоваться ботом без каких-либо лимитов."
+    else:
+        text += "\n\n✅ <b>У вас активная подписка.</b> Вы можете пользоваться всеми функциями бота."
+    return text
+
+@router.message(Command("profile"))
+async def profile_command(message: Message, session):
+    user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+    lang = _lang(user)
+
+    if not user:
+        await message.answer(t("user_not_found", lang))
+        return
+
+    text = _profile_text(user, lang)
+
+    if getattr(user, "status", "") != "active":
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=photo_limit_subscription_keyboard(lang),
+        )
+    else:
+        await message.answer(
+            text,
+            parse_mode="HTML",
+        )
+
+
+@router.message(Command("subscription"))
+async def subscription_command_handler(message: Message, session):
+    user_repo = UserRepository(session)
+    user = await user_repo.get_by_telegram_id(message.from_user.id)
+
+    if not user:
+        return
+
+    lang = user.language if user.language else "ru"
+
+    await message.answer(
+        build_subscription_main_text_for_user(user, lang),
+        reply_markup=subscription_main_keyboard(lang),
+        disable_web_page_preview=True,
+    )
+
+
+
+def command_language_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🇹🇯 Тоҷикӣ", callback_data="cmdlang:tj"),
+                InlineKeyboardButton(text="🇷🇺 Русский", callback_data="cmdlang:ru"),
+                InlineKeyboardButton(text="🇺🇿 O‘zbek", callback_data="cmdlang:uz"),
+            ]
+        ]
+    )
+
+
+@router.message(Command("language"))
+async def language_command_handler(message: Message, session):
+    user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+    lang = getattr(user, "language", None) or "ru"
+
+    await message.answer(
+        t("choose_language", lang),
+        reply_markup=command_language_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("cmdlang:"))
+async def command_language_callback_handler(callback: CallbackQuery, session):
+    lang = callback.data.split(":")[1]
+
+    user_repo = UserRepository(session)
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        return
+
+    user.language = lang
+    await session.commit()
+
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    await callback.message.answer(t("language_selected", lang))
+
+
+

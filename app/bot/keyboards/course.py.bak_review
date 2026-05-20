@@ -1,0 +1,64 @@
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+from app.bot.utils.i18n import t
+
+
+def course_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("course_continue", lang),
+                    callback_data="course:continue",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("course_review_last", lang),
+                    callback_data="course:review_last",
+                ),
+                InlineKeyboardButton(
+                    text=t("course_retry_test", lang),
+                    callback_data="course:retry_test",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("course_progress", lang),
+                    callback_data="course:progress",
+                ),
+                InlineKeyboardButton(
+                    text=t("course_reminder_settings", lang),
+                    callback_data="course:reminder_settings",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("course_back_to_qa", lang),
+                    callback_data="course:back_to_qa",
+                )
+            ],
+        ]
+    )
+
+
+def lesson_selection_keyboard(lessons) -> InlineKeyboardMarkup:
+    buttons = []
+    sorted_lessons = sorted(lessons, key=lambda x: x.id)
+
+    row = []
+    for idx, lesson in enumerate(sorted_lessons, start=1):
+        row.append(
+            InlineKeyboardButton(
+                text=f"{idx}-dars",
+                callback_data=f"course:pick_lesson:{lesson.id}"
+            )
+        )
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+
+    if row:
+        buttons.append(row)
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

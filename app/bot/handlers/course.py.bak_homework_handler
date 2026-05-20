@@ -1,0 +1,521 @@
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+import json
+
+from app.repositories.user_repo import UserRepository
+from app.services.course_engine_service import CourseEngineService
+from app.services.course_tutor_service import CourseTutorService
+from app.bot.utils.i18n import t
+from app.bot.keyboards.course import course_menu_keyboard, lesson_selection_keyboard
+from app.bot.keyboards.referral import photo_limit_subscription_keyboard
+from app.bot.keyboards.course_context import (
+    course_resume_keyboard,
+    course_review_offer_keyboard,
+    course_satisfaction_keyboard,
+    course_homework_keyboard,
+    course_next_lesson_keyboard,
+)
+
+router = Router()
+
+
+def _format_homework_text(lang: str, homework_raw) -> str:
+    title = t("course_homework_title", lang)
+
+    if not homework_raw:
+        return title
+
+    try:
+        data = json.loads(homework_raw) if isinstance(homework_raw, str) else homework_raw
+    except Exception:
+        return f"{title}\n\n{homework_raw}"
+
+    if isinstance(data, list):
+        lines = [title, ""]
+        for i, item in enumerate(data, 1):
+            lines.append(f"{i}. {item}")
+        return "\n".join(lines)
+
+    if isinstance(data, dict):
+        lines = [title, ""]
+        for key, value in data.items():
+            if isinstance(value, list):
+                lines.append(f"{key}:")
+                for i, item in enumerate(value, 1):
+                    lines.append(f"{i}. {item}")
+            else:
+                lines.append(f"{key}: {value}")
+        return "\n".join(lines)
+
+    return f"{title}\n\n{data}"
+
+
+
+
+
+def get_course_keyboard_for_step(lang: str, step: str):
+    if step == "satisfaction_check":
+        return course_satisfaction_keyboard(lang)
+    if step == "homework":
+        return course_homework_keyboard(lang)
+    if step == "completed":
+        return course_next_lesson_keyboard(lang)
+    return course_resume_keyboard(lang)
+
+@router.callback_query(F.data.startswith("course:pick_lesson:"))
+async def course_pick_lesson_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+    tutor = CourseTutorService()
+
+    lang = callback.from_user.language_code if callback.from_user.language_code in ["ru", "uz", "tj"] else "ru"
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("user_not_found", lang))
+        return
+
+    if user.status != "active":
+        await callback.answer()
+        await callback.message.answer(
+            t("course_only_active_users", lang),
+            reply_markup=photo_limit_subscription_keyboard(lang),
+        )
+        return
+
+    try:
+        lesson_id = int(callback.data.split(":")[-1])
+    except Exception:
+        await callback.answer()
+        return
+
+    user, progress, lesson, error_key = await engine.pick_lesson(callback.from_user.id, lesson_id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    text = await tutor.generate_step_response(
+        user_language=user.language,
+        user_level=user.level,
+        lesson=lesson,
+        step=progress.current_step,
+        user_message="",
+    )
+
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(text)
+
+
+
+@router.callback_query(F.data == "mode:qa")
+async def mode_qa_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+
+    lang = callback.from_user.language_code if callback.from_user.language_code in ["ru", "uz", "tj"] else "ru"
+
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("user_not_found", lang))
+        return
+
+    user.learning_mode = "qa"
+    await session.commit()
+
+    await callback.answer()
+    await callback.message.answer(t("trial_started_info", user.language))
+    await callback.message.answer(t("send_first_message", user.language))
+
+@router.callback_query(F.data == "mode:course")
+async def course_mode_open_handler(callback: CallbackQuery, session):
+    await callback.answer()
+    await _run_course_entry_flow(
+        session=session,
+        telegram_id=callback.from_user.id,
+        respond=callback.message.answer,
+    )
+
+
+
+
+async def _run_course_entry_flow(
+    *,
+    session,
+    telegram_id: int,
+    respond,
+):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+    tutor = CourseTutorService()
+
+    user = await user_repo.get_by_telegram_id(telegram_id)
+    if not user:
+        await respond(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    if user.status != "active":
+        await respond(
+            t("course_only_active_users", lang),
+            reply_markup=photo_limit_subscription_keyboard(lang),
+        )
+        return
+
+    user.learning_mode = "course"
+    await session.commit()
+
+    progress = await engine.progress_repo.get_by_user_id(user.id)
+    if not progress:
+        progress = await engine.progress_repo.create(
+            user_id=user.id,
+            level=user.level,
+            current_lesson_id=None,
+            current_step="intro",
+            waiting_for="none",
+        )
+
+    if not progress.current_lesson_id:
+        lessons = await engine.lesson_repo.list_by_level(user.level)
+        await respond(
+            f"HSK {user.level[-1] if user.level and user.level.startswith('hsk') else user.level}. {t('course_choose_lesson', lang)}",
+            reply_markup=lesson_selection_keyboard(lessons),
+        )
+        return
+
+    user, progress, lesson, error_key = await engine.continue_course(telegram_id)
+    if error_key:
+        await respond(t(error_key, lang))
+        return
+
+    text = await tutor.generate_step_response(
+        user_language=user.language,
+        user_level=user.level,
+        lesson=lesson,
+        step=progress.current_step,
+        user_message="",
+    )
+
+    await respond(text)
+
+@router.message(F.text == "/course")
+async def course_command_handler(message: Message, session):
+    await _run_course_entry_flow(
+        session=session,
+        telegram_id=message.from_user.id,
+        respond=message.answer,
+    )
+
+
+@router.callback_query(F.data == "course:back_to_qa")
+async def course_back_to_qa_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    user.learning_mode = "qa"
+    await session.commit()
+
+    lang = user.language if user.language else "ru"
+
+    await callback.answer()
+    await callback.message.answer(t("send_first_message", lang))
+
+
+
+
+@router.callback_query(F.data == "course:continue")
+async def course_continue_handler(callback: CallbackQuery, session):
+    await callback.answer()
+    await _run_course_entry_flow(
+        session=session,
+        telegram_id=callback.from_user.id,
+        respond=callback.message.answer,
+    )
+
+
+
+@router.callback_query(F.data == "course:progress")
+async def course_progress_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    if user.status != "active":
+        await callback.answer()
+        await callback.message.answer(
+            t("course_only_active_users", lang),
+            reply_markup=photo_limit_subscription_keyboard(lang),
+        )
+        return
+
+    user, progress, lesson, error_key = await engine.get_current_lesson(callback.from_user.id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    current_lesson = lesson.title if lesson else "-"
+    completed_count = progress.completed_lessons_count if progress else 0
+
+    text = (
+        f"📊 {t('course_progress', lang)}\n\n"
+        f"{t('course_current_lesson', lang)}: {current_lesson}\n"
+        f"{t('course_completed_lessons', lang)}: {completed_count}"
+    )
+
+    await callback.answer()
+    await callback.message.answer(text)
+
+
+
+@router.callback_query(F.data == "course:review_last")
+async def course_review_last_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+    tutor = CourseTutorService()
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    if user.status != "active":
+        await callback.answer()
+        await callback.message.answer(
+            t("course_only_active_users", lang),
+            reply_markup=photo_limit_subscription_keyboard(lang),
+        )
+        return
+
+    user.learning_mode = "course"
+    await session.commit()
+
+    user, progress, lesson, error_key = await engine.get_current_lesson(callback.from_user.id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    text = await tutor.generate_step_response(
+        user_language=user.language,
+        user_level=user.level,
+        lesson=lesson,
+        step=progress.current_step,
+        user_message=t("course_review", lang),
+    )
+
+    await callback.answer()
+    await callback.message.answer(text)
+
+
+
+@router.callback_query(F.data == "course:retry_test")
+async def course_retry_test_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+    tutor = CourseTutorService()
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    if user.status != "active":
+        await callback.answer()
+        await callback.message.answer(
+            t("course_only_active_users", lang),
+            reply_markup=photo_limit_subscription_keyboard(lang),
+        )
+        return
+
+    user.learning_mode = "course"
+    await session.commit()
+
+    user, progress, lesson, error_key = await engine.get_current_lesson(callback.from_user.id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    await engine.progress_repo.set_current_lesson_and_step(
+        progress=progress,
+        lesson_id=lesson.id,
+        step="quiz",
+    )
+    await session.commit()
+
+    text = await tutor.generate_step_response(
+        user_language=user.language,
+        user_level=user.level,
+        lesson=lesson,
+        step="quiz",
+        user_message=t("course_start_quiz", lang),
+    )
+
+    await message.answer(text)
+
+
+@router.callback_query(F.data == "course:satisfied_yes")
+async def course_satisfied_yes_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    user, progress, lesson, error_key = await engine.mark_satisfied_and_go_to_homework(callback.from_user.id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    await callback.answer()
+    await callback.message.answer(
+        t("course_lesson_homework_intro", lang)
+    )
+
+
+@router.callback_query(F.data == "course:satisfied_no")
+async def course_satisfied_no_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    user, progress, lesson, error_key = await engine.mark_not_satisfied_and_stay(callback.from_user.id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    await callback.answer()
+    await callback.message.answer(
+        t("course_lesson_what_unclear", lang)
+    )
+
+
+@router.callback_query(F.data == "course:show_homework")
+async def course_show_homework_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    user, progress, lesson, error_key = await engine.get_current_lesson(callback.from_user.id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    homework_text = _format_homework_text(lang, lesson.homework_json)
+
+    await callback.answer()
+    await callback.message.answer(homework_text)
+
+
+@router.callback_query(F.data == "course:start_next_lesson")
+async def course_start_next_lesson_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+    engine = CourseEngineService(session)
+    tutor = CourseTutorService()
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    user, progress, lesson, current_error_key = await engine.get_current_lesson(callback.from_user.id)
+    if current_error_key:
+        await callback.answer()
+        await callback.message.answer(t(current_error_key, lang))
+        return
+
+    if progress.homework_status != "submitted":
+        await callback.answer()
+        await callback.message.answer(t("course_complete_homework_first", lang))
+        return
+
+    user, progress, lesson, next_lesson, error_key = await engine.complete_lesson_and_unlock_next(callback.from_user.id)
+    if error_key:
+        await callback.answer()
+        await callback.message.answer(t(error_key, lang))
+        return
+
+    if not next_lesson:
+        await callback.answer()
+        await callback.message.answer(t("course_completed_title", lang))
+        return
+
+    text = await tutor.generate_step_response(
+        user_language=user.language,
+        user_level=user.level,
+        lesson=next_lesson,
+        step="intro",
+        user_message="",
+    )
+
+    await callback.answer()
+    await callback.message.answer(text)
+
+
+@router.callback_query(F.data == "course:skip_next_study_time")
+async def course_skip_next_study_time_handler(callback: CallbackQuery, session):
+    user_repo = UserRepository(session)
+
+    user = await user_repo.get_by_telegram_id(callback.from_user.id)
+    if not user:
+        await callback.answer()
+        await callback.message.answer(t("access_start_first", "ru"))
+        return
+
+    lang = user.language if user.language else "ru"
+
+    await callback.answer()
+    await callback.message.answer(
+        t("course_next_study_time_skipped", lang)
+    )

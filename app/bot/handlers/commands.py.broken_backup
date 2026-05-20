@@ -1,0 +1,234 @@
+from aiogram import Router, F
+from aiogram.filters import Command
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
+
+from app.config import settings
+from app.repositories.user_repo import UserRepository
+from app.bot.handlers.subscription import build_subscription_main_text_for_user
+from app.bot.keyboards.subscription import subscription_main_keyboard
+from app.bot.keyboards.referral import photo_limit_subscription_keyboard
+from app.bot.utils.i18n import t
+
+
+router = Router()
+
+
+def _lang(user) -> str:
+    return user.language if user and user.language else "ru"
+
+
+def _fmt_date(dt) -> str:
+    if not dt:
+        return "-"
+    try:
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return str(dt)
+
+
+def _status_label(status: str, lang: str) -> str:
+    if lang == "tj":
+        return {
+            "trial": "Санҷишӣ",
+            "active": "Фаъол",
+            "expired": "Ба анҷом расида",
+            "blocked": "Баста",
+        }.get(status, status)
+    if lang == "uz":
+        return {
+            "trial": "Sinov",
+            "active": "Faol",
+            "expired": "Tugagan",
+            "blocked": "Bloklangan",
+        }.get(status, status)
+    return {
+        "trial": "Пробный",
+        "active": "Активный",
+        "expired": "Закончен",
+        "blocked": "Заблокирован",
+    }.get(status, status)
+
+
+
+def _profile_text(user, lang: str) -> str:
+    from html import escape
+
+    full_name = escape(str(getattr(user, "full_name", "—") or "—"))
+    language = escape(str(getattr(user, "language", "—") or "—"))
+    level = escape(str(getattr(user, "level", "—") or "—"))
+    status = escape(str(getattr(user, "status", "—") or "—"))
+    learning_mode = escape(str(getattr(user, "learning_mode", "—") or "—"))
+
+    started = (
+        getattr(user, "trial_start_date", None)
+        or getattr(user, "trial_started_at", None)
+        or getattr(user, "created_at", None)
+    )
+    ends = (
+        getattr(user, "trial_end_date", None)
+        or getattr(user, "trial_ends_at", None)
+        or getattr(user, "subscription_end_date", None)
+        or getattr(user, "expires_at", None)
+    )
+
+    def fmt_date(value):
+        if not value:
+            return "—"
+        try:
+            return str(value)[:10]
+        except Exception:
+            return "—"
+
+    started_str = escape(fmt_date(started))
+    ends_str = escape(fmt_date(ends))
+
+    if lang == "tj":
+        text = (
+            f"<b>👤 Профили шумо</b>\n\n"
+            f"<blockquote>"
+            f"🙍 <b>Ном:</b> {full_name}\n"
+            f"🈯 <b>Забон:</b> {language}\n"
+            f"📖 <b>Дараҷа:</b> {level}\n"
+            f"🎯 <b>Режими ҷорӣ:</b> {learning_mode}\n"
+            f"⭐ <b>Ҳолат:</b> {status}\n\n"
+            f"🗓 <b>Оғоз:</b> {started_str}\n"
+            f"⌛ <b>Анҷом:</b> {ends_str}"
+            f"</blockquote>"
+        )
+        if getattr(user, "status", "") != "active":
+            text += "\n\n🔓 <b>Агар обунаро фаъол кунед</b>, метавонед аз бот бе ягон лимит истифода баред."
+        else:
+            text += "\n\n✅ <b>Шумо обунаи фаъол доред.</b> Шумо метавонед аз ҳамаи функсияҳои бот истифода баред."
+        return text
+
+    if lang == "uz":
+        text = (
+            f"<b>👤 Profilingiz</b>\n\n"
+            f"<blockquote>"
+            f"🙍 <b>Ism:</b> {full_name}\n"
+            f"🈯 <b>Til:</b> {language}\n"
+            f"📖 <b>Daraja:</b> {level}\n"
+            f"🎯 <b>Joriy rejim:</b> {learning_mode}\n"
+            f"⭐ <b>Holat:</b> {status}\n\n"
+            f"🗓 <b>Boshlanish:</b> {started_str}\n"
+            f"⌛ <b>Tugash:</b> {ends_str}"
+            f"</blockquote>"
+        )
+        if getattr(user, "status", "") != "active":
+            text += "\n\n🔓 <b>Obuna faollashtirsangiz</b>, botdan hech qanday limitsiz foydalanasiz."
+        else:
+            text += "\n\n✅ <b>Sizda faol obuna bor.</b> Botning barcha funksiyalaridan foydalanishingiz mumkin."
+        return text
+
+    text = (
+        f"<b>👤 Ваш профиль</b>\n\n"
+        f"<blockquote>"
+        f"🙍 <b>Имя:</b> {full_name}\n"
+        f"🈯 <b>Язык:</b> {language}\n"
+        f"📖 <b>Уровень:</b> {level}\n"
+        f"🎯 <b>Текущий режим:</b> {learning_mode}\n"
+        f"⭐ <b>Статус:</b> {status}\n\n"
+        f"🗓 <b>Начало:</b> {started_str}\n"
+        f"⌛ <b>Окончание:</b> {ends_str}"
+        f"</blockquote>"
+    )
+    if getattr(user, "status", "") != "active":
+        text += "\n\n🔓 <b>Если активируете подписку</b>, сможете пользоваться ботом без каких-либо лимитов."
+    else:
+        text += "\n\n✅ <b>У вас активная подписка.</b> Вы можете пользоваться всеми функциями бота."
+    return text
+"
+            f"<blockquote>"
+            f"🙍 <b>Ном:</b> {full_name}
+"
+            f"🈯 <b>Забон:</b> {language}
+"
+            f"📖 <b>Дараҷа:</b> {level}
+"
+            f"🎯 <b>Режими ҷорӣ:</b> {learning_mode}
+"
+            f"⭐ <b>Ҳолат:</b> {status}
+
+"
+            f"🗓 <b>Оғоз:</b> {started_str}
+"
+            f"⌛ <b>Анҷом:</b> {ends_str}"
+            f"</blockquote>"
+        )
+        if getattr(user, "status", "") != "active":
+            text += "
+
+🔓 <b>Агар обунаро фаъол кунед</b>, метавонед аз бот бе ягон лимит истифода баред."
+        else:
+            text += "
+
+✅ <b>Шумо обунаи фаъол доред.</b> Шумо метавонед аз ҳамаи функсияҳои бот истифода баред."
+        return text
+
+    if lang == "uz":
+        text = (
+            f"<b>👤 Profilingiz</b>
+
+"
+            f"<blockquote>"
+            f"🙍 <b>Ism:</b> {full_name}
+"
+            f"🈯 <b>Til:</b> {language}
+"
+            f"📖 <b>Daraja:</b> {level}
+"
+            f"🎯 <b>Joriy rejim:</b> {learning_mode}
+"
+            f"⭐ <b>Holat:</b> {status}
+
+"
+            f"🗓 <b>Boshlanish:</b> {started_str}
+"
+            f"⌛ <b>Tugash:</b> {ends_str}"
+            f"</blockquote>"
+        )
+        if getattr(user, "status", "") != "active":
+            text += "
+
+🔓 <b>Obuna faollashtirsangiz</b>, botdan hech qanday limitsiz foydalanasiz."
+        else:
+            text += "
+
+✅ <b>Sizda faol obuna bor.</b> Botning barcha funksiyalaridan foydalanishingiz mumkin."
+        return text
+
+    text = (
+        f"<b>👤 Ваш профиль</b>
+
+"
+        f"<blockquote>"
+        f"🙍 <b>Имя:</b> {full_name}
+"
+        f"🈯 <b>Язык:</b> {language}
+"
+        f"📖 <b>Уровень:</b> {level}
+"
+        f"🎯 <b>Текущий режим:</b> {learning_mode}
+"
+        f"⭐ <b>Статус:</b> {status}
+
+"
+        f"🗓 <b>Начало:</b> {started_str}
+"
+        f"⌛ <b>Окончание:</b> {ends_str}"
+        f"</blockquote>"
+    )
+    if getattr(user, "status", "") != "active":
+        text += "
+
+🔓 <b>Если активируете подписку</b>, сможете пользоваться ботом без каких-либо лимитов."
+    else:
+        text += "
+
+✅ <b>У вас активная подписка.</b> Вы можете пользоваться всеми функциями бота."
+    return text

@@ -1,0 +1,14 @@
+.env
+app/.env
+.claude/
+.codex/
+.venv/
+venv/
+venv_311/
+__pycache__/
+*.pyc
+.DS_Store
+graphify-out/
+MEMORY.md
+memory/
+app.db

@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: telegram_chinese_bot_postgres
+    environment:
+      POSTGRES_DB: telegram_chinese_bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    container_name: telegram_chinese_bot_redis
+    ports:
+      - "6379:6379"
