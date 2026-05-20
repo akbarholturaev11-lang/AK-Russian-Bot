@@ -752,22 +752,6 @@ async def handle_text_message(message: Message, state: FSMContext, session):
         if is_cancel:
             return
 
-    if user and not COURSE_MODE_ENABLED:
-        reminder_engine = CourseEngineService(session)
-        reminder_progress = await reminder_engine.progress_repo.get_by_user_id(user.id)
-        if reminder_progress and reminder_progress.waiting_for == "reminder_setup":
-            await reminder_engine.progress_repo.set_waiting_for(reminder_progress, "none")
-            await session.commit()
-            await message.answer(
-                {
-                    "uz": "🚧 Kurs eslatmalari hozir o‘chirilgan.",
-                    "ru": "🚧 Напоминания курса сейчас отключены.",
-                    "tj": "🚧 Ёдраскунакҳои курс ҳоло хомӯшанд.",
-                }.get(user_lang, "🚧 Напоминания курса сейчас отключены."),
-                reply_markup=main_menu_keyboard(user_lang),
-            )
-            return
-
     if user:
         reminder_engine = CourseEngineService(session)
         reminder_progress = await reminder_engine.progress_repo.get_by_user_id(user.id)

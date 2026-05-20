@@ -13,6 +13,9 @@ def main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:
                 KeyboardButton(text=t("menu_invite", lang)),
                 KeyboardButton(text=t("menu_help", lang)),
             ],
+            [
+                KeyboardButton(text=t("course_reminder_set_button", lang)),
+            ],
         ],
         resize_keyboard=True,
         input_field_placeholder="...",

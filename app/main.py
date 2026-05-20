@@ -51,9 +51,9 @@ async def _background_scheduler(bot: Bot) -> None:
                 await DailyResetService(session).send_daily_reset_notifications(bot)
             async with async_session_maker() as session:
                 await ExpiryReminderService(session).send_expiry_reminders(bot)
+            async with async_session_maker() as session:
+                await CourseReminderService(session).send_due_reminders(bot)
             if COURSE_MODE_ENABLED:
-                async with async_session_maker() as session:
-                    await CourseReminderService(session).send_due_reminders(bot)
                 async with async_session_maker() as session:
                     await CourseReminderService(session).send_weekly_progress_reports(bot)
             async with async_session_maker() as session:

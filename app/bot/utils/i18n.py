@@ -10,6 +10,7 @@ TEXTS = {
         "onboarding_special_welcome": "🌟 Шумо <b>{user_num}</b>-умин корбари мо шудед!\n\n<blockquote>🎁 Ба хотири ин, ба шумо 24 соат дастрасии пурра кушода шуд. Фото-анализ бо лимити рӯзона кор мекунад.</blockquote>",
         "trial_24h_info": "🎁 <b>24 соат дастрасии пурра кушода шуд!</b>\n\n<blockquote>Шумо метавонед савол-ҷавоб, фото-анализ ва voice-ро истифода баред.\n\n📸 Фото-анализ бо лимити рӯзона кор мекунад.\n⏰ 24 соат баъд лимити рӯзонаи матн ҳам фаъол мешавад.</blockquote>",
         "send_first_message": "Акнун калима, ҷумла ё саволи русии худро фиристед — аз ҳамон ҷо оғоз мекунем.",
+        "qa_reminder_text": "⏰ <b>Вақти машқи русӣ расид!</b>\n\n<blockquote>Як калима, ҷумла ё савол фиристед — ман кӯмак мекунам.</blockquote>",
         "level_beginner": "Аз 0",
 
         "menu_start_lesson": "📘 Оғози дарс",
@@ -154,6 +155,7 @@ TEXTS = {
         "onboarding_special_welcome": "🌟 Вы стали нашим <b>{user_num}-м</b> пользователем!\n\n<blockquote>🎁 В честь этого вам открыт полный доступ на <b>24 часа</b>. Фото-анализ работает с дневным лимитом.</blockquote>",
         "trial_24h_info": "🎁 <b>24 часа полного доступа активированы!</b>\n\n<blockquote>Вы можете использовать вопрос-ответ, фото-анализ и voice.\n\n📸 Фото-анализ работает с дневным лимитом.\n⏰ Через 24 часа активируется дневной лимит на текст.</blockquote>",
         "send_first_message": "Теперь отправьте русское слово, фразу или свой вопрос — и начнём с этого.",
+        "qa_reminder_text": "⏰ <b>Время практики русского!</b>\n\n<blockquote>Отправьте слово, фразу или вопрос — я помогу.</blockquote>",
         "level_beginner": "С нуля",
 
         "menu_start_lesson": "📘 Начать урок",
@@ -294,6 +296,7 @@ TEXTS = {
         "onboarding_special_welcome": "🌟 Siz bizning <b>{user_num}-chi</b> foydalanuvchimiz bo’ldingiz!\n\n<blockquote>🎁 Buning sharofati bilan sizga to’liq <b>24 soat</b> kirish ochildi. Foto analiz kunlik limit bilan ishlaydi.</blockquote>",
         "trial_24h_info": "🎁 <b>24 soatlik to’liq kirish faollashtirildi!</b>\n\n<blockquote>Savol-javob, foto analiz va voice’dan foydalanishingiz mumkin.\n\n📸 Foto analiz kunlik limit bilan ishlaydi.\n⏰ 24 soatdan keyin matn uchun ham kunlik limit ishga tushadi.</blockquote>",
         "send_first_message": "Endi ruscha so‘z, gap yoki savolingizni yuboring — shu yerdan boshlaymiz.",
+        "qa_reminder_text": "⏰ <b>Rus tilini mashq qilish vaqti!</b>\n\n<blockquote>Biror so‘z, gap yoki savol yuboring — yordam beraman.</blockquote>",
         "level_beginner": "0 dan",
 
         "menu_start_lesson": "📘 Darsni boshlash",
